@@ -1,19 +1,22 @@
 
+import crypto from "node:crypto";
+
 export default async function handler(req, res) {
   const { code, error } = req.query;
 
   if (error || !code) {
-    return res.status(400).send("Autorização do Discord cancelada");
+    return res.status(400).send("Autorização cancelada");
   }
 
   const clientId = process.env.DISCORD_CLIENT_ID;
   const clientSecret = process.env.DISCORD_CLIENT_SECRET;
+  const sessionSecret = process.env.SESSION_SECRET;
 
   const redirectUri =
     "https://vortex-code-qwzy.vercel.app/api/auth/callback/discord";
 
-  if (!clientId || !clientSecret) {
-    return res.status(500).send("Configuração do Discord incompleta");
+  if (!clientId || !clientSecret || !sessionSecret) {
+    return res.status(500).send("Configuração incompleta");
   }
 
   try {
@@ -37,7 +40,7 @@ export default async function handler(req, res) {
     const tokens = await tokenResponse.json();
 
     if (!tokenResponse.ok || !tokens.access_token) {
-      return res.status(401).send("Não foi possível validar o login");
+      return res.status(401).send("Falha na autenticação");
     }
 
     const userResponse = await fetch(
@@ -51,21 +54,33 @@ export default async function handler(req, res) {
 
     const user = await userResponse.json();
 
-    if (!userResponse.ok) {
-      return res.status(401).send("Não foi possível identificar o usuário");
+    if (!userResponse.ok || !user.id) {
+      return res.status(401).send("Usuário não identificado");
     }
 
-    res.setHeader("Cache-Control", "no-store");
-    return res.status(200).json({
-      message: "Login autorizado",
-      user: {
+    const payload = Buffer.from(
+      JSON.stringify({
         id: user.id,
         username: user.username,
-        global_name: user.global_name
-      }
-    });
+        exp: Date.now() + 7 * 24 * 60 * 60 * 1000
+      })
+    ).toString("base64url");
+
+    const signature = crypto
+      .createHmac("sha256", sessionSecret)
+      .update(payload)
+      .digest("base64url");
+
+    const session = `${payload}.${signature}`;
+
+    res.setHeader("Set-Cookie",
+      `vortex_session=${session}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`
+    );
+
+    res.setHeader("Cache-Control", "no-store");
+
+    return res.redirect(302, "/");
   } catch (err) {
-    return res.status(500).send("Erro ao conectar com o Discord");
+    return res.status(500).send("Erro ao autenticar com Discord");
   }
-        }
-        
+}
